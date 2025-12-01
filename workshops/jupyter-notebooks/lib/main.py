@@ -73,13 +73,13 @@ class Notebook:
     def clone_catsniffer_tools(self):
         if not os.path.exists(CS_TOOLS_PATH):
             print(f"Cloning repository {CS_TOOLS_URL}...")
-            self.run_process_cmd(["git", "clone", CS_TOOLS_URL])
+            _ = self.run_process_cmd(["git", "clone", CS_TOOLS_URL])
             print("Done")
         else:
             print(f"Updating existing repository in {CS_TOOLS_PATH}...")
             try:
-                self.run_process_cmd(["git", "-C", CS_TOOLS_PATH, "fetch"])
-                self.run_process_cmd(["git", "-C", CS_TOOLS_PATH, "pull"])
+                _ = self.run_process_cmd(["git", "-C", CS_TOOLS_PATH, "fetch"])
+                _ = self.run_process_cmd(["git", "-C", CS_TOOLS_PATH, "pull"])
             except subprocess.CalledProcessError as e:
                 print(f"Failed to update repository: {e}")
     
@@ -89,8 +89,8 @@ class Notebook:
             print("Please, contact with the trainers.")
         else:
             print("Installing the requirements...")
-            self.run_process_cmd(["pip", "install", "-r", REQUIREMENTS])
-            self.run_process_cmd(["pip", "install", CATSNIFFER_PATH])
+            _ = self.run_process_cmd(["pip", "install", "-r", REQUIREMENTS])
+            _ = self.run_process_cmd(["pip", "install", CATSNIFFER_PATH])
             print("Done!")
     
     def download_catsniffer_firmware(self):
@@ -100,7 +100,7 @@ class Notebook:
             print("Please, run the first code block.")
         else:
             print("Downloading the firmware...")
-            self.run_process_cmd(cmd)
+            _ = self.run_process_cmd(cmd)
     
     # Sanity check
     def get_release_folder(self):
@@ -144,6 +144,11 @@ class Notebook:
                     break
                 print("Waiting connection RP2040...")
                 time.sleep(2)
+    
+    def flash_cc_fiwmare(self, firmware):
+        cmd = [PYTHON_ENV, os.path.join(CATNIP_PATH, "catnip_uploader.py"), "load", firmware, "--validate"]
+        print(f"> {' '.join(cmd)}\n")
+        self.run_process_cmd(cmd)
                 
 class SerialConnection:
     def __init__(self):
@@ -313,7 +318,7 @@ class HandsOn1CatsnifferUI:
             return
         cmd = [PYTHON_ENV, os.path.join(SXTOOLS_PATH, "meshtasticDecoder.py"), "-k", key, "-i", payload]
         self.output_decoded_tm.append_stdout(f"> {' '.join(cmd)}\n")
-        ret = self.nb.run_process_cmd(cmd=cmd)
+        ret = self.nb.run_process_cmd(cmd=cmd, print_stdout=False)
         self.output_decoded_tm.append_stdout(ret)
     
     def _on_clear_decoder_output(self, _):
@@ -375,4 +380,119 @@ class HandsOn1CatsnifferUI:
             widgets.HBox([self.text_frequency_decoder, self.dropdown_preset_decoder, self.btn_run_decode, self.btn_stop_decode ]), 
             self.btn_clear_decoder_output,
             self.output_live_decoder
+        ]))
+
+class SerialConnection:
+    def __init__(self):
+        self.port = ""
+        self.serial_conn = None
+    
+    def connect(self, port:str = "", baudrate:int = 115200, timeout:int = 1) -> bool:
+        try:
+            self.serial_conn = serial.Serial(port=port, baudrate=baudrate, timeout=timeout)
+            return True
+        except Exception as e:
+            print(e)
+            return False
+    
+    def disconnect(self) -> None:
+        if self.serial_conn:
+            self.serial_conn.close()
+            self.serial_conn = None
+    
+    def send_command_string(self, command:str) -> None:
+        """Send commmand in string. This function add Carriage return"""
+        if self.serial_conn and self.serial_conn.is_open:
+            cmd = command + "\r\n"
+            self.serial_conn.write(cmd.encode())
+    
+    def send_command_string_with_response(self, command:str) -> bytes:
+        self.send_command_string(command=command)
+        time.sleep(0.3)
+        try:
+            return self.serial_conn.read_all().decode(errors="ignore")
+        except:
+            return "Nan"
+                
+class HandsOn2CatsnifferUI:
+    def __init__(self):
+        self.nb = Notebook()
+        # ======= UI Terminal ========
+        self.output_terminal   = widgets.Output(layout=widgets.Layout(width='100%', height='250px', border="1px solid black", overflow='scroll'))
+        self.btn_port          = widgets.Button(description="Scan ports")
+        self.dropdown_channel    = widgets.Dropdown(options=[i for i in range(11, 27)], value=25, description='Channel:', layout=widgets.Layout(width='25%'))
+        self.input_user        = widgets.Text(placeholder="Type the command", layout=widgets.Layout(width='25%'))
+        self.btn_clear_output  = widgets.Button(description="Clear console", icon="eraser")
+        self.btn_loop_read     = widgets.Button(description="Open", icon="play-circle", button_style="success")
+        self.dropdown_ports    = widgets.Dropdown(options=self.nb.detect_serial_ports(None), description='Ports:', layout=widgets.Layout(width='25%'))
+        
+        self.sniffer_thread = threading.Thread()
+        self.sniffer_process = False
+        self.sniffer_status = False
+        
+        self.btn_port.on_click(self._on_scan_port)
+        self.btn_clear_output.on_click(self._on_clear_output)
+        self.btn_loop_read.on_click(self._on_loop_reading)
+        self._on_scan_port(None)
+        
+    
+    def _loop_sniffer_worker(self):
+        try:
+            cmd = [PYTHON_ENV, os.path.join(PYCATSNIFF_PATH, "cat_sniffer.py"), "sniff", self.dropdown_ports.value, "-ff", "-ws", "-phy", "zigbee", "-ch", str(self.dropdown_channel.value)]
+            self.output_terminal.append_stdout(f"> {' '.join(cmd)}\n")
+            if running_windows():
+                self.sniffer_process = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, creationflags=subprocess.CREATE_NEW_PROCESS_GROUP)
+            else:
+                self.sniffer_process = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, preexec_fn=os.setsid)
+            
+            for line in self.sniffer_process.stdout:
+                try:
+                    text = line.decode("utf-8", errors="replace")
+                except:
+                    text = str(line)
+                self.output_terminal.append_stdout(text)
+            self.sniffer_process.wait()
+            
+        except NameError:
+            self.output_terminal.append_stdout("Please run the block code of the terminal above, and select the communication port\n")
+    
+    def _show_prompt_catsniffer(self, data):
+        prompt = f"\n[CATSNIFFER] {data}"
+        self.output_terminal.append_stdout(prompt)
+    
+    def _show_prompt_user(self, data):
+        prompt = f"> {data}\n"
+        self.output_terminal.append_stdout(prompt)
+    
+    def _on_scan_port(self, _):
+        self.dropdown_ports.options = self.nb.detect_serial_ports(None)
+
+    def _on_clear_output(self, _):
+        self.output_terminal.clear_output()
+    
+    def _on_loop_reading(self, _):
+        self.sniffer_status = not self.sniffer_status
+        
+        if self.sniffer_status:
+            if not self.sniffer_thread.is_alive():
+                self.sniffer_thread = threading.Thread(target=self._loop_sniffer_worker)
+                self.sniffer_thread.start()
+                self.btn_loop_read.description = "Close"
+                self.btn_loop_read.icon="stop-circle"
+                self.btn_loop_read.button_style='danger'
+        else:
+            self.btn_loop_read.description = "Open"
+            self.btn_loop_read.icon="play-circle"
+            self.btn_loop_read.button_style='success'
+            if self.sniffer_thread and self.sniffer_thread.is_alive():
+                if running_windows():
+                    self.sniffer_process.send_signal(signal.CTRL_C_EVENT)
+                else:
+                    os.killpg(os.getpgid(self.sniffer_process.pid), signal.SIGINT)
+                self.sniffer_thread.join(timeout=1)
+    
+    def display_ui_terminal(self):
+        display(widgets.VBox([
+            widgets.HBox([self.btn_port, self.dropdown_ports, self.dropdown_channel, self.btn_loop_read, self.btn_clear_output]),
+            self.output_terminal
         ]))
