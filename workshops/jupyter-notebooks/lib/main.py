@@ -321,21 +321,25 @@ class HandsOn1CatsnifferUI:
     
     def _decoder_worker(self):
         try:
-            cmd = [PYTHON_ENV, os.path.join(SXTOOLS_PATH, "meshtasticLiveDecoder.py"), "-p", self.dropdown_ports.value, "-baud", self.dropdown_baudrate.value, "-f", self.text_frequency_decoder.value, "-ps", self.dropdown_preset_decoder.value]
-            self.output_terminal.append_stdout(f"> {' '.join(cmd)}\n")
+            cmd = [PYTHON_ENV, os.path.join(SXTOOLS_PATH, "meshtasticLiveDecoder.py"), "-p", self.dropdown_ports.value, "-baud", str(self.dropdown_baudrate.value), "-f", str(self.text_frequency_decoder.value), "-ps", self.dropdown_preset_decoder.value]
+            self.output_live_decoder.append_stdout(f"> {' '.join(cmd)}\n")
             if running_windows():
-                self.decoder_process = subprocess.Popen(cmd, stdin=subprocess.PIPE, creationflags=subprocess.CREATE_NEW_PROCESS_GROUP)
+                self.decoder_process = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, creationflags=subprocess.CREATE_NEW_PROCESS_GROUP)
             else:
-                self.decoder_process = subprocess.Popen(cmd, stdin=subprocess.PIPE)
+                self.decoder_process = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, preexec_fn=os.setsid)
+            
+            for line in self.decoder_process.stdout:
+                try:
+                    text = line.decode("utf-8", errors="replace")
+                except:
+                    text = str(line)
+                self.output_live_decoder.append_stdout(text)
             self.decoder_process.wait()
+            
         except NameError:
-            self.output_ws_serial.append_stdout("Please run the block code of the terminal above, and select the communication port\n")
+            self.output_live_decoder.append_stdout("Please run the block code of the terminal above, and select the communication port\n")
 
     def _on_run_live_decoding(self, _):
-        self.output_live_decoder.append_stdout(self.text_frequency_decoder.value)
-        self.output_live_decoder.append_stdout("\n")
-        self.output_live_decoder.append_stdout(self.dropdown_preset_decoder.value)
-        self.output_live_decoder.append_stdout("\n")
         self.decoder_thread = threading.Thread(target=self._decoder_worker)
         self.decoder_thread.start()
 
@@ -368,6 +372,7 @@ class HandsOn1CatsnifferUI:
         
     def display_ui_live_decoding(self):
         display(widgets.VBox([
-            widgets.HBox([self.text_frequency_decoder, self.dropdown_preset_decoder, self.btn_run_decode, self.btn_clear_decoder_output]), 
+            widgets.HBox([self.text_frequency_decoder, self.dropdown_preset_decoder, self.btn_run_decode, self.btn_stop_decode ]), 
+            self.btn_clear_decoder_output,
             self.output_live_decoder
         ]))
