@@ -34,3 +34,7 @@ sniffer_fw/targetConfigs/
 sniffer_fw/Debug/
 
 hardware/CatSniffer-backups/
+
+**.pyc
+__pycache__/
+__pycache__/**
