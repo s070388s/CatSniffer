@@ -25,6 +25,12 @@ BANDWIDTH_INDEX = str(9)
 MESH_DECODER_PRESETS = ["defcon33", "ShortTurbo", "ShortSlow", "ShortFast", "MediumSlow", "MediumFast", "LongSlow", "LongFast", "LongMod", "VLongSlow",
 ]
 
+WS_WINDOWS_PATH = "C:\\Program Files\\Wireshark\\Wireshark.exe"
+WS_LINUX_PATH   = "/usr/bin/wireshark"
+WS_MACOS_PATH   = "/Applications/Wireshark.app/Contents/MacOS/Wireshark"
+
+
+
 def running_windows():
     if platform.platform() == "windows":
         return True
@@ -380,40 +386,7 @@ class HandsOn1CatsnifferUI:
             widgets.HBox([self.text_frequency_decoder, self.dropdown_preset_decoder, self.btn_run_decode, self.btn_stop_decode ]), 
             self.btn_clear_decoder_output,
             self.output_live_decoder
-        ]))
-
-class SerialConnection:
-    def __init__(self):
-        self.port = ""
-        self.serial_conn = None
-    
-    def connect(self, port:str = "", baudrate:int = 115200, timeout:int = 1) -> bool:
-        try:
-            self.serial_conn = serial.Serial(port=port, baudrate=baudrate, timeout=timeout)
-            return True
-        except Exception as e:
-            print(e)
-            return False
-    
-    def disconnect(self) -> None:
-        if self.serial_conn:
-            self.serial_conn.close()
-            self.serial_conn = None
-    
-    def send_command_string(self, command:str) -> None:
-        """Send commmand in string. This function add Carriage return"""
-        if self.serial_conn and self.serial_conn.is_open:
-            cmd = command + "\r\n"
-            self.serial_conn.write(cmd.encode())
-    
-    def send_command_string_with_response(self, command:str) -> bytes:
-        self.send_command_string(command=command)
-        time.sleep(0.3)
-        try:
-            return self.serial_conn.read_all().decode(errors="ignore")
-        except:
-            return "Nan"
-                
+        ]))     
 class HandsOn2CatsnifferUI:
     def __init__(self):
         self.nb = Notebook()
@@ -496,3 +469,89 @@ class HandsOn2CatsnifferUI:
             widgets.HBox([self.btn_port, self.dropdown_ports, self.dropdown_channel, self.btn_loop_read, self.btn_clear_output]),
             self.output_terminal
         ]))
+        
+class HandsOn3CatsnifferUI:
+    def __init__(self):
+        self.nb = Notebook()
+        self.ser = SerialConnection()
+        # ======= UI Terminal ========
+        self.output_terminal   = widgets.Output(layout=widgets.Layout(width='100%', height='250px', border="1px solid black", overflow='scroll'))
+        self.btn_port          = widgets.Button(description="Scan ports")
+        self.input_user        = widgets.Text(placeholder="Type the command", layout=widgets.Layout(width='25%'))
+        self.btn_send_command  = widgets.Button(description="Send", icon="arrow-right")
+        self.btn_clear_output  = widgets.Button(description="Clear console", icon="eraser")
+        self.btn_loop_read     = widgets.Button(description="Open", icon="play-circle", button_style="success")
+        self.btn_open_ws       = widgets.Button(description="Open Wireshark", icon="eye", button_style="primary")
+        self.dropdown_ports    = widgets.Dropdown(options=self.nb.detect_serial_ports(None), description='Ports:', layout=widgets.Layout(width='40%'))
+        self.dropdown_baudrate = widgets.Dropdown(options=[9600, 19200, 115200, 921600 ], value=921600, description='Baudrate:', layout=widgets.Layout(width='40%'))
+        
+        self.loop_thread = threading.Thread()
+        self.loop_reading = False
+        
+        self.btn_port.on_click(self._on_scan_port)
+        self.btn_send_command.on_click(self._on_send_command)
+        self.btn_clear_output.on_click(self._on_clear_output)
+        self.btn_loop_read.on_click(self._on_loop_reading)
+        self.btn_open_ws.on_click(self._on_open_ws)
+        self._on_scan_port(None)
+        
+    def _loop_reading_worker(self):
+        if self.ser.connect(port=self.dropdown_ports.value, baudrate=self.dropdown_baudrate.value):
+            while self.loop_reading:
+                data = self.ser.serial_conn.read_all()
+                if data:
+                    self.output_terminal.append_stdout(data.decode())
+                time.sleep(0.1)
+            self.ser.disconnect()
+    
+    def _show_prompt_user(self, data):
+        prompt = f"> {data}\n"
+        self.output_terminal.append_stdout(prompt)
+    
+    def _on_open_ws(self, _):
+        if platform.system() == "Windows":
+            cmd = [WS_WINDOWS_PATH]
+        elif platform.system() == "Linux":
+            cmd = [WS_LINUX_PATH]
+        elif platform.system() == "Darwin":
+            cmd = [WS_MACOS_PATH]
+        else:
+            print("Not supported OS")
+            return
+        _ = self.nb.run_process_cmd(cmd)
+    
+    def _on_scan_port(self, _):
+        self.dropdown_ports.options = self.nb.detect_serial_ports(None)
+    
+    def _on_send_command(self, _):
+        cmd = self.input_user.value
+        self.ser.send_command_string(cmd)
+        self.input_user.value = ""
+
+    def _on_clear_output(self, _):
+        self.output_terminal.clear_output()
+    
+    def _on_loop_reading(self, _):
+        self.loop_reading = not self.loop_reading
+        
+        if self.loop_reading:
+            if not self.loop_thread.is_alive():
+                self.loop_thread = threading.Thread(target=self._loop_reading_worker)
+                self.loop_thread.start()
+                self.btn_loop_read.description = "Close"
+                self.btn_loop_read.icon="stop-circle"
+                self.btn_loop_read.button_style='danger'
+        else:
+            self.btn_loop_read.description = "Open"
+            self.btn_loop_read.icon="play-circle"
+            self.btn_loop_read.button_style='success'
+    
+    def display_ui_minino_terminal(self):
+        display(widgets.VBox([
+            widgets.Box([self.btn_port, self.dropdown_ports, self.dropdown_baudrate, self.btn_loop_read]),
+            widgets.HBox([self.input_user, self.btn_send_command, self.btn_clear_output]), 
+            self.output_terminal
+        ]))
+    
+    def display_open_wireshark_btn(self):
+        display(self.btn_open_ws)
