@@ -1,6 +1,8 @@
 import os
 import time
+import queue
 import signal
+import base64
 import subprocess
 import threading
 import platform
@@ -8,6 +10,7 @@ import serial.tools.list_ports
 import ipywidgets as widgets
 from pathlib import Path
 from IPython.display import display, clear_output
+from meshtasticLiveDecoder import Monitor, CHANNELS_PRESET, SYNC_WORLD, DEFAULT_KEYS, extract_frame, extract_fields, decrypt, decode_protobuf, print_packet_info
 
 ROOT_PATH       = os.getcwd()
 PYTHON_ENV      = "python3"                                                   # Change this based on your python executable
@@ -40,7 +43,7 @@ class Notebook:
     def __init__(self):
         pass
     
-    def run_process_cmd(self, cmd=[], print_stdout=True) -> str:
+    def run_process_cmd(self, cmd=[], print_stdout=True, output_block=None) -> str:
         process =  subprocess.Popen(
             cmd,
             stdout=subprocess.PIPE,
@@ -64,6 +67,8 @@ class Notebook:
                 clear_output(wait=True)
                 if print_stdout:
                     print(buffer)
+                if output_block:
+                    output_block.append_stdout(buffer)
         return buffer
 
     def detect_serial_ports(self, _):
@@ -242,7 +247,7 @@ class HandsOn1CatsnifferUI:
         self.btn_clear_decoder_output = widgets.Button(description="Clear console", icon="eraser")
         
         self.decoder_thread = threading.Thread()
-        self.decoder_process = None
+        self.decoder_process = False
         
         self.btn_run_decode.on_click(self._on_run_live_decoding)
         self.btn_stop_decode.on_click(self._on_stop_decoder)
@@ -293,12 +298,26 @@ class HandsOn1CatsnifferUI:
     
     def _wireshark_worker(self):
         try:
-            cmd = ["python", os.path.join(PYCATSNIFF_PATH, "cat_sniffer.py"), "lora", "--frequency", str(self.text_frequency.value), "-bw", str(self.drop_bandwidth.value), "-sf", str(self.drop_s_factor.value), "-ff", "-ws", self.dropdown_ports.value]
+            cmd = [PYTHON_ENV, os.path.join(PYCATSNIFF_PATH, "cat_sniffer.py"), "lora", "--frequency", str(self.text_frequency.value), "-bw", str(self.drop_bandwidth.value), "-sf", str(self.drop_s_factor.value), "-sw", "0x2B", "-ff", "-ws", self.dropdown_ports.value]
             self.output_wireshark.append_stdout(f"> {' '.join(cmd)}\n")
             if running_windows():
-                self.sniffer_process = subprocess.Popen(cmd, stdin=subprocess.PIPE, creationflags=subprocess.CREATE_NEW_PROCESS_GROUP)
+                print("Running on windows")
+                self.sniffer_process =  subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, encoding="utf-8", errors="replace", creationflags=subprocess.CREATE_NEW_PROCESS_GROUP)
             else:
-                self.sniffer_process = subprocess.Popen(cmd, stdin=subprocess.PIPE)
+                self.sniffer_process =  subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, encoding="utf-8", errors="replace")
+            buffer = ""
+            while True:
+                line = self.sniffer_process.stdout.readline()
+                if not line and self.sniffer_process.poll() is not None:
+                    break
+                if line:
+                    try:
+                        decoded = line.decode("utf-8", errors="replace")
+                    except:
+                        decoded = str(line)
+                    buffer += decoded
+                    self.output_wireshark.append_stdout(buffer)
+            self.nb.run_process_cmd(cmd, output_block=self.output_wireshark)
             self.sniffer_process.wait()
         except NameError:
             self.output_wireshark.append_stdout("Please run the block code of the terminal above, and select the communication port\n")
@@ -331,37 +350,55 @@ class HandsOn1CatsnifferUI:
         self.output_live_decoder.clear_output()
     
     def _decoder_worker(self):
+        cmd = [PYTHON_ENV, os.path.join(SXTOOLS_PATH, "meshtasticLiveDecoder.py"), "-p", self.dropdown_ports.value, "-baud", str(self.dropdown_baudrate.value), "-f", str(self.text_frequency_decoder.value), "-ps", self.dropdown_preset_decoder.value]
+        self.output_live_decoder.append_stdout(f"> {' '.join(cmd)}\n")
+        rx_queue = queue.Queue()
+        mon = Monitor(self.dropdown_ports.value, self.dropdown_baudrate.value, rx_queue)
+        mon.start()
+        
+        mon.transmit(f"set_bw {CHANNELS_PRESET[self.dropdown_preset_decoder.value]['bw']}")
+        mon.transmit(f"set_sf {CHANNELS_PRESET[self.dropdown_preset_decoder.value]['sf']}")
+        mon.transmit(f"set_cr {CHANNELS_PRESET[self.dropdown_preset_decoder.value]['cr']}")
+        mon.transmit(f"set_pl {CHANNELS_PRESET[self.dropdown_preset_decoder.value]['pl']}")
+        mon.transmit(f"set_sw {SYNC_WORLD}")
+        mon.transmit(f"set_freq {self.text_frequency_decoder.value}")
+        mon.transmit("set_rx")
         try:
-            cmd = [PYTHON_ENV, os.path.join(SXTOOLS_PATH, "meshtasticLiveDecoder.py"), "-p", self.dropdown_ports.value, "-baud", str(self.dropdown_baudrate.value), "-f", str(self.text_frequency_decoder.value), "-ps", self.dropdown_preset_decoder.value]
-            self.output_live_decoder.append_stdout(f"> {' '.join(cmd)}\n")
-            if running_windows():
-                self.decoder_process = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, creationflags=subprocess.CREATE_NEW_PROCESS_GROUP)
-            else:
-                self.decoder_process = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, preexec_fn=os.setsid)
-            while True:
-                line = self.decoder_process.stdout.readline()
-                if not line and self.decoder_process.poll() is not None:
-                    break
-                try:
-                    text = line.decode("utf-8", errors="replace")
-                except:
-                    text = str(line)
-                self.output_live_decoder.append_stdout(text)
-            self.decoder_process.wait()
-            
-        except NameError:
-            self.output_live_decoder.append_stdout("Please run the block code of the terminal above, and select the communication port\n")
+            while self.decoder_process:
+                if not rx_queue.empty():
+                    frame = rx_queue.get()
+                    try:
+                        raw = extract_frame(frame)
+                        fields = extract_fields(raw)
+                        for key_b64 in DEFAULT_KEYS:
+                            key = base64.b64decode(key_b64)
+                            try:
+                                decrypted = decrypt(fields['payload'], key, fields['sender'], fields['packet_id'])
+                                decoded = decode_protobuf(decrypted, fields['sender'].hex(), fields['dest'].hex())
+                                if decoded:
+                                    print_packet_info(fields, decrypted, self.output_live_decoder)
+                                    self.output_live_decoder.append_stdout(f"[INFO] Successfully decrypted using key: {key_b64}")
+                                    self.output_live_decoder.append_stdout(decoded)
+                                    break
+                            except Exception:
+                                continue
+                    except Exception as e:
+                        self.output_live_decoder.append_stdout(f"[MSG] raw: {frame}\n")
+            self.output_live_decoder.append_stdout("\n[INFO] Shutting down gracefully...")
+            mon.stop()
+        except Exception as e:
+            self.output_live_decoder.append_stdout(f"\n[ERROR] {e}")
+            mon.stop()
 
     def _on_run_live_decoding(self, _):
-        self.decoder_thread = threading.Thread(target=self._decoder_worker)
+        self.decoder_process = True
+        self.decoder_thread = threading.Thread(target=self._decoder_worker, daemon=True)
         self.decoder_thread.start()
 
     def _on_stop_decoder(self, _):
+        print("Stopping")
         if self.decoder_thread and self.decoder_thread.is_alive():
-            if running_windows():
-                self.decoder_process.send_signal(signal.CTRL_C_EVENT)
-            else:
-                os.killpg(os.getpgid(self.decoder_process.pid), signal.SIGINT)
+            self.decoder_process = False
             self.decoder_thread.join(timeout=1)
     
     def display_ui_terminal(self):
