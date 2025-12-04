@@ -255,9 +255,6 @@ class HandsOn1CatsnifferUI:
         
         self.btn_run_pycat.on_click(self._on_run_ws)
         self.btn_stop_pycat.on_click(self._on_stop_ws)
-
-        self.sniffer_collector = SCollector.SnifferCollector(stdout=self.output_wireshark)
-        self.output_workers = []
         
         # ======= UI Static Telemetry Decoder ========
         self.output_decoded_tm = widgets.Output(layout=widgets.Layout(width='100%', height='500px', border="1px solid black", overflow='scroll'))
