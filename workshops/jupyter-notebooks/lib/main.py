@@ -13,7 +13,6 @@ from IPython.display import display, clear_output
 from meshtasticLiveDecoder import Monitor, CHANNELS_PRESET, SYNC_WORLD, DEFAULT_KEYS, extract_frame, extract_fields, decrypt, decode_protobuf, print_packet_info
 
 ROOT_PATH       = os.getcwd()
-PYTHON_ENV      = "python3"                                                   # Change this based on your python executable
 CS_DIRNAME      = "CatSniffer-Tools"
 CS_TOOLS_URL    = "https://github.com/ElectronicCats/CatSniffer-Tools.git"
 CS_TOOLS_PATH   = os.path.join(ROOT_PATH, CS_DIRNAME)
@@ -24,7 +23,7 @@ PYCATSNIFF_PATH = os.path.join(ROOT_PATH, CS_TOOLS_PATH, "pycatsniffer_bv3")
 SXTOOLS_PATH    = os.path.join(ROOT_PATH, CS_TOOLS_PATH, "sx1262Tools")
 
 FREQUENCY_BASE  = str(906.875)
-BANDWIDTH_INDEX = str(9)
+BANDWIDTH_INDEX = str(8)
 MESH_DECODER_PRESETS = ["defcon33", "ShortTurbo", "ShortSlow", "ShortFast", "MediumSlow", "MediumFast", "LongSlow", "LongFast", "LongMod", "VLongSlow",
 ]
 
@@ -32,7 +31,27 @@ WS_WINDOWS_PATH = "C:\\Program Files\\Wireshark\\Wireshark.exe"
 WS_LINUX_PATH   = "/usr/bin/wireshark"
 WS_MACOS_PATH   = "/Applications/Wireshark.app/Contents/MacOS/Wireshark"
 
+def validate_python_call():
+    try:
+        output = subprocess.check_output(
+            ["python", "--version"], stderr=subprocess.STDOUT
+        )
+        output = output.decode("utf-8").strip()
+        if output.startswith("Python 3."):
+            return "python"
+    except Exception:
+        pass
+    try:
+        output = subprocess.check_output(
+            ["python3", "--version"], stderr=subprocess.STDOUT
+        )
+        output = output.decode("utf-8").strip()
+        if output.startswith("Python 3."):
+            return "python3"
+    except Exception:
+        return None
 
+PYTHON_ENV      = validate_python_call()
 
 def running_windows():
     if platform.system() == "Windows":
@@ -85,6 +104,8 @@ class Notebook:
         if not os.path.exists(CS_TOOLS_PATH):
             print(f"Cloning repository {CS_TOOLS_URL}...")
             _ = self.run_process_cmd(["git", "clone", CS_TOOLS_URL])
+            _ = self.run_process_cmd(["git", "-C", CS_TOOLS_PATH, "checkout", "uf2"])
+            _ = self.run_process_cmd(["git", "-C", CS_TOOLS_PATH, "pull"])
             print("Done")
         else:
             print(f"Updating existing repository in {CS_TOOLS_PATH}...")
@@ -173,6 +194,9 @@ class SerialConnection:
         except Exception as e:
             print(e)
             return False
+
+    def write(self, data) -> None:
+        self.serial_conn.write(data)
     
     def disconnect(self) -> None:
         if self.serial_conn:
@@ -201,6 +225,11 @@ class HandsOn1CatsnifferUI:
         self.output_terminal   = widgets.Output(layout=widgets.Layout(width='100%', height='500px', border="1px solid black", overflow='scroll'))
         self.btn_port          = widgets.Button(description="Scan ports")
         self.input_user        = widgets.Text(placeholder="Type the command", layout=widgets.Layout(width='25%'))
+        self.text_frequency   = widgets.Text(value=FREQUENCY_BASE, placeholder="Frequency value", description="Frequency", layout=widgets.Layout(width='25%'))
+        self.drop_bandwidth   = widgets.Dropdown(options=["1", "2", "3", "4", "5", "6", "7", "8", "9"], value=BANDWIDTH_INDEX, description='Bandwidth Index:', disabled=False, layout=widgets.Layout(width='25%'))
+        self.drop_s_factor   = widgets.Dropdown(options=["6", "7", "8", "9", "10", "11", "12"], value="11", description='Spreading Factor:', disabled=False, layout=widgets.Layout(width='25%'))
+        self.text_preamble_l   = widgets.Text(value="8", placeholder="Preamble Length", description="Preamble Length", layout=widgets.Layout(width='25%'))
+        self.text_sync_word   = widgets.Text(value="0x2B", placeholder="Sync Word", description="Sync Word", layout=widgets.Layout(width='25%'))
         self.btn_send_command  = widgets.Button(description="Send", icon="arrow-right")
         self.btn_clear_output  = widgets.Button(description="Clear console", icon="eraser")
         self.btn_loop_read     = widgets.Button(description="Open", icon="play-circle", button_style="success")
@@ -217,10 +246,7 @@ class HandsOn1CatsnifferUI:
         self._on_scan_port(None)
         
         # ======= UI Wireshark ========
-        self.output_wireshark = widgets.Output(layout=widgets.Layout(width='100%', height='500px', border="1px solid black", overflow='scroll'))
-        self.text_frequency   = widgets.Text(value=FREQUENCY_BASE, placeholder="Frequency value", description="Frequency", layout=widgets.Layout(width='25%'))
-        self.drop_bandwidth   = widgets.Dropdown(options=["1", "2", "3", "4", "5", "6", "7", "8", "9"], value=BANDWIDTH_INDEX, description='Bandwidth Index:', disabled=False, layout=widgets.Layout(width='25%'))
-        self.drop_s_factor   = widgets.Dropdown(options=["6", "7", "8", "9", "10", "11", "12"], value="11", description='Spreading Factor:', disabled=False, layout=widgets.Layout(width='25%'))
+        self.output_wireshark = widgets.Output(layout=widgets.Layout(width='100%', height='200px', border="1px solid black", overflow='scroll'))
         self.btn_run_pycat    = widgets.Button(description="Run", icon="play-circle", button_style="success")
         self.btn_stop_pycat   = widgets.Button(description="Stop", icon="stop-circle", button_style="danger")
         
@@ -229,6 +255,9 @@ class HandsOn1CatsnifferUI:
         
         self.btn_run_pycat.on_click(self._on_run_ws)
         self.btn_stop_pycat.on_click(self._on_stop_ws)
+
+        self.sniffer_collector = SCollector.SnifferCollector(stdout=self.output_wireshark)
+        self.output_workers = []
         
         # ======= UI Static Telemetry Decoder ========
         self.output_decoded_tm = widgets.Output(layout=widgets.Layout(width='100%', height='500px', border="1px solid black", overflow='scroll'))
@@ -255,12 +284,14 @@ class HandsOn1CatsnifferUI:
     
     def _loop_reading_worker(self):
         if self.ser.connect(port=self.dropdown_ports.value, baudrate=self.dropdown_baudrate.value):
+            self.configure_lora_catsniffer()
             while self.loop_reading:
                 data = self.ser.serial_conn.readline()
                 if data:
                     self._show_prompt_catsniffer(data.decode("utf-8", errors="ignore"))
                 time.sleep(0.1)
             self.ser.disconnect()
+            self._show_prompt_user(f"{self.dropdown_ports.value} Closed")
     
     def _show_prompt_catsniffer(self, data):
         prompt = f"[CATSNIFFER] {data}"
@@ -296,44 +327,25 @@ class HandsOn1CatsnifferUI:
             self.btn_loop_read.icon="play-circle"
             self.btn_loop_read.button_style='success'
     
-    def _wireshark_worker(self):
+    def _ws_worker(self):
         try:
-            cmd = [PYTHON_ENV, os.path.join(PYCATSNIFF_PATH, "cat_sniffer.py"), "lora", "--frequency", str(self.text_frequency.value), "-bw", str(self.drop_bandwidth.value), "-sf", str(self.drop_s_factor.value), "-sw", "0x2B", "-ff", "-ws", self.dropdown_ports.value]
+            cmd = [PYTHON_ENV, os.path.join(PYCATSNIFF_PATH, "cat_sniffer.py"), "lora", "--frequency", str(self.text_frequency.value), "-bw", str(self.drop_bandwidth.value), "-sf", str(self.drop_s_factor.value), "-sw", str(self.text_sync_word.value), "-ff", "-ws", "-st", self.dropdown_ports.value]
             self.output_wireshark.append_stdout(f"> {' '.join(cmd)}\n")
-            if running_windows():
-                print("Running on windows")
-                self.sniffer_process =  subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, encoding="utf-8", errors="replace", creationflags=subprocess.CREATE_NEW_PROCESS_GROUP)
-            else:
-                self.sniffer_process =  subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, encoding="utf-8", errors="replace")
-            buffer = ""
-            while True:
-                line = self.sniffer_process.stdout.readline()
-                if not line and self.sniffer_process.poll() is not None:
-                    break
-                if line:
-                    try:
-                        decoded = line.decode("utf-8", errors="replace")
-                    except:
-                        decoded = str(line)
-                    buffer += decoded
-                    self.output_wireshark.append_stdout(buffer)
-            self.nb.run_process_cmd(cmd, output_block=self.output_wireshark)
-            self.sniffer_process.wait()
-        except NameError:
-            self.output_wireshark.append_stdout("Please run the block code of the terminal above, and select the communication port\n")
-
+            subprocess.run(cmd)
+        except Exception as e:
+            print(e)
+            self.output_wireshark.append_stdout(e)
+    
     def _on_run_ws(self, _):
-        self.wireshark_thread = threading.Thread(target=self._wireshark_worker)
+        self.wireshark_thread = threading.Thread(target=self._ws_worker, daemon=True)
         self.wireshark_thread.start()
 
     def _on_stop_ws(self, _):
         if self.wireshark_thread and self.wireshark_thread.is_alive():
-            if running_windows():
-                self.sniffer_process.send_signal(signal.CTRL_C_EVENT)
-            else:
-                self.sniffer_process.stdin.write(b"exit\n")
-                self.sniffer_process.stdin.flush()
-            self.wireshark_thread.join(timeout=1)
+            try:
+                self.wireshark_thread.join(timeout=1)
+            except Exception as e:
+                print(e)
     
     def _on_decode_telemetry(self, _):
         payload = self.text_payload.value
@@ -396,21 +408,30 @@ class HandsOn1CatsnifferUI:
         self.decoder_thread.start()
 
     def _on_stop_decoder(self, _):
-        print("Stopping")
         if self.decoder_thread and self.decoder_thread.is_alive():
             self.decoder_process = False
             self.decoder_thread.join(timeout=1)
     
+    def configure_lora_catsniffer(self):
+        self.ser.write(bytes(f"set_freq {self.text_frequency.value}\r\n", "utf-8"))
+        self.ser.write(bytes(f"set_bw {str(self.drop_bandwidth.value)}\r\n", "utf-8"))
+        self.ser.write(bytes(f"set_sf {str(self.drop_s_factor.value)}\r\n", "utf-8"))
+        self.ser.write(bytes(f"set_pl {self.text_preamble_l.value}\r\n", "utf-8"))
+        self.ser.write(bytes(f"set_sw {self.text_sync_word.value}\r\n", "utf-8"))
+        self.ser.write(b"get_config\r\n")
+        self.ser.write(b"set_rx\r\n")
+    
     def display_ui_terminal(self):
         display(widgets.VBox([
             widgets.Box([self.btn_port, self.dropdown_ports, self.dropdown_baudrate, self.btn_loop_read]),
+            widgets.HBox([self.text_frequency, self.drop_bandwidth, self.drop_s_factor, self.text_preamble_l, self.text_sync_word]),
             widgets.HBox([self.input_user, self.btn_send_command, self.btn_clear_output]), 
             self.output_terminal
         ]))
     
     def display_ui_wireshark(self):
         display(widgets.VBox([
-            widgets.HBox([self.text_frequency, self.drop_bandwidth, self.drop_s_factor, self.btn_run_pycat, self.btn_stop_pycat]), 
+            widgets.HBox([self.btn_run_pycat, self.btn_stop_pycat]), 
             self.output_wireshark
         ]))
     
@@ -452,21 +473,7 @@ class HandsOn2CatsnifferUI:
         try:
             cmd = [PYTHON_ENV, os.path.join(PYCATSNIFF_PATH, "cat_sniffer.py"), "sniff", self.dropdown_ports.value, "-ff", "-ws", "-phy", "zigbee", "-ch", str(self.dropdown_channel.value)]
             self.output_terminal.append_stdout(f"> {' '.join(cmd)}\n")
-            if running_windows():
-                self.sniffer_process = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, creationflags=subprocess.CREATE_NEW_PROCESS_GROUP)
-            else:
-                self.sniffer_process = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, preexec_fn=os.setsid)
-            while True:
-                line = self.sniffer_process.stdout.readline()
-                if not line and self.sniffer_process.poll() is not None:
-                    break
-                try:
-                    text = line.decode("utf-8", errors="replace")
-                except:
-                    text = str(line)
-                self.output_terminal.append_stdout(text)
-            self.sniffer_process.wait()
-            
+            self.sniffer_process = subprocess.run(cmd)
         except NameError:
             self.output_terminal.append_stdout("Please run the block code of the terminal above, and select the communication port\n")
     
@@ -499,10 +506,6 @@ class HandsOn2CatsnifferUI:
             self.btn_loop_read.icon="play-circle"
             self.btn_loop_read.button_style='success'
             if self.sniffer_thread and self.sniffer_thread.is_alive():
-                if running_windows():
-                    self.sniffer_process.send_signal(signal.CTRL_C_EVENT)
-                else:
-                    os.killpg(os.getpgid(self.sniffer_process.pid), signal.SIGINT)
                 self.sniffer_thread.join(timeout=1)
     
     def display_ui_terminal(self):
@@ -518,7 +521,7 @@ class HandsOn3CatsnifferUI:
         # ======= UI Terminal ========
         self.output_terminal   = widgets.Output(layout=widgets.Layout(width='100%', height='500px', border="1px solid black", overflow='scroll'))
         self.btn_port          = widgets.Button(description="Scan ports")
-        self.input_user        = widgets.Text(placeholder="Type the command", layout=widgets.Layout(width='25%'))
+        self.input_user        = widgets.Text(value="gattcmd_", placeholder="Type the command", layout=widgets.Layout(width='25%'))
         self.btn_send_command  = widgets.Button(description="Send", icon="arrow-right")
         self.btn_clear_output  = widgets.Button(description="Clear console", icon="eraser")
         self.btn_loop_read     = widgets.Button(description="Open", icon="play-circle", button_style="success")
@@ -528,6 +531,7 @@ class HandsOn3CatsnifferUI:
         
         self.loop_thread = threading.Thread()
         self.loop_reading = False
+        self.start_command = False
         
         self.btn_port.on_click(self._on_scan_port)
         self.btn_send_command.on_click(self._on_send_command)
@@ -538,6 +542,8 @@ class HandsOn3CatsnifferUI:
         
     def _loop_reading_worker(self):
         if self.ser.connect(port=self.dropdown_ports.value, baudrate=self.dropdown_baudrate.value):
+            if self.start_command:
+                self.ser.send_command_string("gattcmd_scan")
             while self.loop_reading:
                 data = self.ser.serial_conn.readline()
                 if data:
@@ -587,7 +593,8 @@ class HandsOn3CatsnifferUI:
             self.btn_loop_read.icon="play-circle"
             self.btn_loop_read.button_style='success'
     
-    def display_ui_minino_terminal(self):
+    def display_ui_minino_terminal(self, start_command = False):
+        self.start_command = start_command
         display(widgets.VBox([
             widgets.Box([self.btn_port, self.dropdown_ports, self.dropdown_baudrate, self.btn_loop_read]),
             widgets.HBox([self.input_user, self.btn_send_command, self.btn_clear_output]), 
