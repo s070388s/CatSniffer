@@ -468,7 +468,7 @@ class HandsOn2CatsnifferUI:
     
     def _loop_sniffer_worker(self):
         try:
-            cmd = [PYTHON_ENV, os.path.join(PYCATSNIFF_PATH, "cat_sniffer.py"), "sniff", self.dropdown_ports.value, "-ff", "-ws", "-phy", "zigbee", "-ch", str(self.dropdown_channel.value)]
+            cmd = [PYTHON_ENV, os.path.join(PYCATSNIFF_PATH, "cat_sniffer.py"), "sniff", self.dropdown_ports.value, "-ff", "-ws", "-phy", "zigbee", "-st", "-c", str(self.dropdown_channel.value)]
             self.output_terminal.append_stdout(f"> {' '.join(cmd)}\n")
             self.sniffer_process = subprocess.run(cmd)
         except NameError:
