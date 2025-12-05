@@ -3,6 +3,8 @@
 ## Install Python 3.13.3
 https://www.python.org/ftp/python/3.13.3/python-3.13.3-amd64.exe
 
+## COPY the repo into the `C:` to avoid issues with the path
+
 ```bash
 
 # Optional
