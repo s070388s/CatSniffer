@@ -1,4 +1,4 @@
-# Fresh Install
+# Installation
 
 These instructions are exclusively for the installation and configuration of the essential tools required to execute the workshops contained within this folder, which consist of Jupyter notebook files. At this time, these procedures are specifically designed for setup and operation within the Windows operating system.
 
