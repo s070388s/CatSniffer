@@ -71,3 +71,23 @@ The files to execute step by step are the next:
 4. **CatSniffer-Lab3-BLE.ipynb:** The third laboratory to work with Catsniffer and Minino with the BLE Protocol
 5. **Minino - Lab4 - Wifi Captive Portal.ipynb:** The fourth laboratory to work with Minino using the Captive portal Application  
 6. **Minino - Lab5 - Wifi Deauthentication.ipynb:** The fifth laboratory to work with Minino and the Wifi Deauthentication   
+
+## Other requirements
+For the the Labs 1 and 2 install **Wireshark v4.4**, where you need to install the dissectors for the operative system from here https://github.com/ElectronicCats/CatSniffer-Wireshark/releases/tag/v0.1.1.
+
+### Setup Dissectors
+1. Download the dissector for the operative system you’re using from this link https://github.com/ElectronicCats/CatSniffer-Wireshark/releases/tag/v0.1.1
+2. Unzip the downloaded file
+3. Open Wireshark and navigate “Help > About Wireshark” option
+4. Select the Folders tab
+5. In the Name column, find the **Personal Plugins** and double click in the path of the Location column
+6. Copy the two files (catsniffer_rpi and catsniffersx1262) into the folder **epan**.
+7. Open the navigate to Edit and enter to **Preferences** menu, in the Protocols tree, find the “DLT_USER” and select it
+8. Click in the “Edit…” button
+9. Add the following records:
+   - catsniffer_rpi:
+     - **DLT**: DLT=147
+     - **Payload dissector**: catsniffer_rpi
+   - catsniffersx1262_rpi:
+     - **DLT**: DLT=148
+     - **Payload dissector**: catsniffersx1262_rpi
